@@ -3,6 +3,7 @@ import { useState, useRef, useEffect } from 'react';
 function App() {
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState([]);
+  const [page, setPage] = useState('login');
   const bottomRef = useRef(null);
   const [selectedIndex, setSelectedIndex] = useState(null);
 
