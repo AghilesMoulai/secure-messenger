@@ -1,86 +1,28 @@
-import { useState, useRef, useEffect } from 'react';
-import nacl from 'tweetnacl';
-import { encodeBase64, decodeBase64 } from 'tweetnacl-util';
+import {useState, useRef, useEffect} from 'react';
 
-function Login({onSuccess, onRegister}){
+function Register({onSuccess, onLogin}){
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
+    const [username, setUsername] = useState('');
 
-    const sendLogins = async () => {
-        if(email.trim() === '') {
-            return console.error("adresse mail non fournie !");
-        }
-
-        if(password.trim() === ''){
-            console.error('Mot de passe non fourni !');
+    const sendRegistration = async () => {
+        if(email.trim() === '' || password.trim() === '' || username.trim() === ''){
+            return console.error("veuillez remplir tout le formulaire !");
         }
 
         try{
-            const res = await fetch('http://localhost:3001/login', {
+            const res = await fetch('http://localhost:3001/register', {
                 method: 'POST',
                 headers: {
-                    'Content-type': 'application/json'
+                    'Content-Type': 'application/json'
                 },
-                body: JSON.stringify({email: email, password: password})
+                body: JSON.stringify({username:username, email:email, password:password})
             });
 
-            const data = await res.json();
-            
-            if(data.token){
-            
-            localStorage.setItem('token', data.token);
-            localStorage.setItem('username', data.username);
-
-            const storedPrivateKey = localStorage.getItem('private_key');
-
-            if (!storedPrivateKey) {
-                // Première connexion — générer les clés
-                const keyPair = nacl.box.keyPair();
-                const publicKey = encodeBase64(keyPair.publicKey);
-                const privateKey = encodeBase64(keyPair.secretKey);
-                
-                localStorage.setItem('private_key', privateKey);
-                
-                await fetch('http://localhost:3001/users/key', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${data.token}`
-                    },
-                    body: JSON.stringify({ public_key: publicKey })
-                });
-            } else {
-                // Clé existe — vérifier qu'elle est bien sur le serveur
-                const resKey = await fetch(`http://localhost:3001/users/key/${data.username}`, {
-                    headers: { 'Authorization': `Bearer ${data.token}` }
-                });
-                const keyData = await resKey.json();
-                const serverKey = keyData.public_key?.public_key;
-            
-                if (!serverKey) {
-                    // Clé absente du serveur — la renvoyer
-                    const keyPair = nacl.box.keyPair.fromSecretKey(decodeBase64(storedPrivateKey));
-                    const publicKey = encodeBase64(keyPair.publicKey);
-                    
-                    await fetch('http://localhost:3001/users/key', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${data.token}`
-                        },
-                        body: JSON.stringify({ public_key: publicKey })
-                    });
-                }
-            }
             onSuccess();
-            }
-            else{
-                console.error('Identifiants incorrrectes');
-            }
-        } catch (error) {
-            console.error("Erreur lors de l'envoie des informations au serveur", error);
+        }catch (error){
+            console.error("Erreur lors de l'envoie du formulaire", error);
         }
-
     }
 
     return (
@@ -129,8 +71,21 @@ function Login({onSuccess, onRegister}){
                         color: '#4a148c',
                         marginBottom: '0.5rem'
                     }}>
-                        Connexion
+                        Inscription
                     </div>
+
+                    <input
+                        placeholder="Username"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        style={{
+                            padding: '0.75rem',
+                            borderRadius: '10px',
+                            border: '1px solid #ccc',
+                            fontSize: '1rem',
+                            fontFamily: 'Arial'
+                        }}
+                    />
 
                     <input
                         placeholder="E-mail"
@@ -150,7 +105,7 @@ function Login({onSuccess, onRegister}){
                         placeholder="Mot de passe"
                         value={password}
                         onChange={(e) => setPassword(e.target.value)}
-                        onKeyDown={(e) => { if(e.key === 'Enter') sendLogins(); }}
+                        onKeyDown={(e) => { if(e.key === 'Enter') sendRegistration(); }}
                         style={{
                             padding: '0.75rem',
                             borderRadius: '10px',
@@ -160,7 +115,7 @@ function Login({onSuccess, onRegister}){
                         }}
                     />
 
-                    <button onClick={sendLogins} style={{
+                    <button onClick={sendRegistration} style={{
                         padding: '0.75rem',
                         border: 'none',
                         backgroundColor: '#4a148c',
@@ -170,22 +125,21 @@ function Login({onSuccess, onRegister}){
                         fontSize: '1rem',
                         cursor: 'pointer'
                     }}>
-                        Se connecter
+                        S'inscrire
                     </button>
 
                     <div style={{ textAlign: 'center', color: '#666', fontSize: '0.9rem' }}>
-                        Pas de compte ?{' '}
                         <span
-                            onClick={onRegister}
+                            onClick={onLogin}
                             style={{ color: '#4a148c', fontWeight: 'bold', cursor: 'pointer' }}
                         >
-                            S'inscrire
+                            Se connecter
                         </span>
                     </div>
                 </div>
             </div>
         </div>
-    );
+    )
 }
 
-export default Login;
+export default Register;

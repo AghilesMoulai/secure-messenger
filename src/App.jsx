@@ -1,15 +1,34 @@
 import { useState, useRef, useEffect } from 'react';
+import nacl from 'tweetnacl';
+import {encodeBase64, decodeBase64} from 'tweetnacl-util'
+
+import Login from './Login.jsx';
+import Register from './Register.jsx';
+import Contacts from './Contacts.jsx';
 
 function App() {
+  
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState([]);
-  const [page, setPage] = useState('login');
+
+  const [page, setPage] = useState(() => {
+    if (!localStorage.getItem('token')) return 'login';
+    return localStorage.getItem('page') || 'contacts'});
+
+  const [selectedContact, setSelectedContact] = useState(() => {
+    return localStorage.getItem('selectedContact');
+  });
+
+  const [contactPublicKey, setContactPublicKey] = useState(() => {
+    return localStorage.getItem('contactPublicKey');
+  });
+  
   const bottomRef = useRef(null);
   const [selectedIndex, setSelectedIndex] = useState(null);
 
   const loadMessages = async () => {
     try {
-      const res = await fetch('http://localhost:3001/messages');
+      const res = await fetch('http://localhost:3001/messages', {headers : {'Authorization': `Bearer ${localStorage.getItem('token')}`}});
       const data = await res.json();
       if(Array.isArray(data)){
         setMessages(data.map(msg => ({...msg, time: new Date(msg.time).toISOString()
@@ -30,18 +49,32 @@ function App() {
   useEffect(() => {
     const loadMessages = async () => {
       try {
-        const res = await fetch('http://localhost:3001/messages');
+        const res = await fetch(`http://localhost:3001/messages?with=${selectedContact}`, {headers: {'Authorization': `Bearer ${localStorage.getItem('token')}`}});
         const data = await res.json();
         if (Array.isArray(data)) {
-          setMessages(data.map(msg => ({ ...msg, time: new Date(msg.time).toISOString() })));
+          const decryptedMessages = await Promise.all(
+            data.map(async (msg) => ({
+              ...msg,
+              text: msg.sender === localStorage.getItem('username')
+              ? (JSON.parse(localStorage.getItem('sentCache') || '{}')[msg.text] || '[mon message]') 
+              : await decryptMessage(msg.text, msg.sender),
+              time: new Date(msg.time).toISOString()
+            }))
+          );
+          setMessages(decryptedMessages);
         }
       } catch (error) {
         console.error('Erreur lors du chargement des messages:', error);  
       }
     };
+    if(page === 'chat'){
+      loadMessages();
 
-    loadMessages();
-  }, []);
+      const interval = setInterval(loadMessages, 3000); 
+
+      return () => clearInterval(interval);
+    }
+  }, [page]);
 
   function formatDateForHeader(isoDate) {
     const date = new Date(isoDate);
@@ -55,13 +88,37 @@ function App() {
   const sendMessage = async () => {
     if (message.trim() !== '') {
       const now = new Date();
+
+      const keyRes = await fetch(`http://localhost:3001/users/key/${selectedContact}`, {
+        headers: { 'Authorization': `Bearer ${localStorage.getItem('token')}` }
+      });
+      const keyData = await keyRes.json();
+      const recipientPublicKey = decodeBase64(keyData.public_key.public_key);
+      const senderPrivateKey = decodeBase64(localStorage.getItem('private_key'));
+      const nonce = nacl.randomBytes(24);
+      const messageBytes = new TextEncoder().encode(message);
+
+      const encrypted = nacl.box(
+        messageBytes,
+        nonce,
+        recipientPublicKey,
+        senderPrivateKey
+      );
+
+      const encryptedText = encodeBase64(nonce) + ':' + encodeBase64(encrypted);
+
       const userMessage = {
-        text: message,
-        sender: 'user',
+        text: encryptedText,
+        sender: localStorage.getItem('username'),
+        receiver: selectedContact,
         time: now.toISOString()
       };
 
-      setMessages((prev) => [...prev, userMessage]);
+      const sentCache = JSON.parse(localStorage.getItem('sentCache') || '{}');
+      sentCache[encryptedText] = message;
+      localStorage.setItem('sentCache', JSON.stringify(sentCache));
+      
+      setMessages((prev) => [...prev, {...userMessage, text: message}]);
       setMessage('');
 
       // Appelle le backend pour enregistrer
@@ -69,35 +126,75 @@ function App() {
         await fetch('http://localhost:3001/messages', {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
           },
           body: JSON.stringify(userMessage)
         });
       } catch (error) {
         console.error("Erreur lors de l'envoi au backend :", error);
       }
-
-      // Simule une réponse du bot
-      setTimeout(() => {
-        const botMessage = {
-          text: 'Réponse bot : je teste ;)',
-          sender: 'bot',
-          time: new Date().toISOString()
-        };
-        setMessages((prev) => [...prev, botMessage]);
-
-        // Envoie aussi la réponse bot au backend
-        fetch('http://localhost:3001/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(botMessage)
-        }).catch(err => console.error("Erreur envoi bot :", err));
-      }, 1000);
     }
   };
 
+  const decryptMessage = async (encryptedText, senderUsername) => {
+    try {
+      const res = await fetch(`http://localhost:3001/users/key/${senderUsername}`, {
+        headers: {'Authorization': `Bearer ${localStorage.getItem('token')}`}
+      });
+
+      const data = await res.json();
+
+      console.log('Clé publique reçue:', data);
+      console.log('Ma clé privée:', localStorage.getItem('private_key'));
+      console.log('senderUsername:', senderUsername);
+      console.log('myUsername:', localStorage.getItem('username'));
+
+      const senderPublicKey = decodeBase64(data.public_key.public_key);
+
+      const [nonceB64, encryptedB64] = encryptedText.split(':');
+      const nonce = decodeBase64(nonceB64);
+      const encrypted = decodeBase64(encryptedB64);
+      const myPrivateKey = decodeBase64(localStorage.getItem('private_key'));
+
+      const decrypted = nacl.box.open(encrypted, nonce, senderPublicKey, myPrivateKey);
+      if(!decrypted) return '[message illisible]'
+
+      return new TextDecoder().decode(decrypted);
+    } catch (error) {
+      return '[erreur de déchiffrement]';
+    }
+  };
+
+  const changePage = (newPage) => {
+    localStorage.setItem('page', newPage);
+    setPage(newPage);
+  }
+
+  const logout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    changePage('login');
+  }
+
+  if (page === 'login'){
+    return <Login onSuccess={() => changePage('contacts')} onRegister={() => changePage('register')}/>;
+  }
+
+  if (page === 'register'){
+    return <Register onSuccess={() => changePage('login')} onLogin={() => changePage('login')} />;
+  }
+
+  if (page === 'contacts'){
+    return <Contacts onSelectedContact={(username, publicKey) => {
+      setSelectedContact(username);
+      setContactPublicKey(publicKey);
+      localStorage.setItem('selectedContact', username);
+      localStorage.setItem('contactPublicKey', publicKey); 
+      changePage('chat');
+    }}
+      onLogout={logout}/>
+  }
 
   return (
     <div 
@@ -130,12 +227,32 @@ function App() {
       <div style={{
         display: 'flex',
         alignItems: 'center',
-        padding: '1rem',
+        padding: '0.2rem',
         borderBottom: '1px solid #ccc',
         backgroundColor: '#fff',
-        gap: '1rem'
+        gap: '1rem',
+        justifyContent: 'space-between'
       }}>
-        <img 
+        
+        <div style={{
+          display:'flex',
+          alignItems: 'center',
+          gap: '0.75rem',
+          fontWeight: 'bold',
+          fontSize: '1.1rem',
+          fontFamily: '"Poppins", sans-serif',
+          color: '#333',
+        }}>
+          <button onClick={() => changePage('contacts')} style={{
+            background: 'none',
+            border: 'none',
+            fontSize: '1.5rem',
+            cursor: 'pointer',
+            color: '#4a148c'
+          }}>
+            &lt;
+          </button>
+          <img 
           src="https://cdn-icons-png.flaticon.com/512/4712/4712109.png" 
           alt="Destinataire" 
           style={{ 
@@ -144,14 +261,25 @@ function App() {
             borderRadius: '50%' 
           }} 
         />
-        <div style={{
-          fontWeight: 'bold',
-          fontSize: '1.1rem',
-          fontFamily: '"Poppins", sans-serif',
-          color: '#333'
-        }}>
-          Bot
+          {selectedContact}
         </div>
+        
+        <div style= {{
+          alignItems: 'right'
+        }}>
+          <button onClick={logout} style= {{
+            padding: 'rem 1rem',
+            border: 'none',
+            backgroundColor: '#4a148c',
+            color: '#fff',
+            borderRadius: '10px',
+            fontWeight: 'bold',
+            cursor: 'pointer'
+          }}>
+            Deconnecter
+          </button>
+        </div>
+      
       </div>
 
       <div style={{ 
@@ -167,7 +295,7 @@ function App() {
         const currentDate = formatDateForHeader(msg.time);
         const previousDate = index > 0 ? formatDateForHeader(messages[index - 1].time) : null;
         const showDate = index === 0 || currentDate !== previousDate;
-        const isUser = msg.sender === 'user';
+        const isUser = msg.sender === localStorage.getItem('username');
 
         return (
           <div key={index}>
@@ -201,7 +329,7 @@ function App() {
                   position: 'relative',
                   marginLeft: isUser ? '20%':'0',
                   marginRight: isUser ? '0': '20%',
-                  marginBottom: '0.5rem'
+                  marginBottom: selectedIndex === index ? '1.5rem' : '0.5rem'
                 }}
               >
                 {msg.text}
@@ -212,7 +340,7 @@ function App() {
                     bottom: '-1.2rem',
                     right: isUser ? '0' : 'unset',
                     left: isUser ? 'unset' : '0',
-                    fontSize: '0.7rem',
+                    fontSize: '0.65rem',
                     color: '#666'
                   }}>
                     {new Date(msg.time).toLocaleTimeString([], {hour:'2-digit', minute: '2-digit'})}
