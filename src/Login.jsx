@@ -6,6 +6,18 @@ function Login({onSuccess, onRegister}){
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
 
+    const passwordToKey = async (password) => {
+      const encoder = new TextEncoder();
+      const keyMaterial = await crypto.subtle.importKey(
+        'raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']
+      );
+      const bits = await crypto.subtle.deriveBits(
+        { name: 'PBKDF2', salt: encoder.encode('aghimessenger-salt'), iterations: 100000, hash: 'SHA-256' },
+        keyMaterial, 256
+      );
+      return new Uint8Array(bits);
+    };
+
     const sendLogins = async () => {
         if(email.trim() === '') {
             return console.error("adresse mail non fournie !");
@@ -31,48 +43,24 @@ function Login({onSuccess, onRegister}){
             localStorage.setItem('token', data.token);
             localStorage.setItem('username', data.username);
 
-            const storedPrivateKey = localStorage.getItem('private_key');
+            const keyRes = await fetch(`http://localhost:3001/users/mykey`, {
+                headers: { 'Authorization': `Bearer ${data.token}` }
+            });
+                const keyData = await keyRes.json();
 
-            if (!storedPrivateKey) {
-                // Première connexion — générer les clés
-                const keyPair = nacl.box.keyPair();
-                const publicKey = encodeBase64(keyPair.publicKey);
-                const privateKey = encodeBase64(keyPair.secretKey);
-                
-                localStorage.setItem('private_key', privateKey);
-                
-                await fetch('http://localhost:3001/users/key', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${data.token}`
-                    },
-                    body: JSON.stringify({ public_key: publicKey })
-                });
-            } else {
-                // Clé existe — vérifier qu'elle est bien sur le serveur
-                const resKey = await fetch(`http://localhost:3001/users/key/${data.username}`, {
-                    headers: { 'Authorization': `Bearer ${data.token}` }
-                });
-                const keyData = await resKey.json();
-                const serverKey = keyData.public_key?.public_key;
-            
-                if (!serverKey) {
-                    // Clé absente du serveur — la renvoyer
-                    const keyPair = nacl.box.keyPair.fromSecretKey(decodeBase64(storedPrivateKey));
-                    const publicKey = encodeBase64(keyPair.publicKey);
-                    
-                    await fetch('http://localhost:3001/users/key', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${data.token}`
-                        },
-                        body: JSON.stringify({ public_key: publicKey })
-                    });
-                }
+            if (keyData.encrypted_private_key) {
+              const passwordKey = await passwordToKey(password);
+              const [nonceB64, encryptedB64] = keyData.encrypted_private_key.split(':');
+              const nonce = decodeBase64(nonceB64);
+              const encrypted = decodeBase64(encryptedB64);
+              const decrypted = nacl.secretbox.open(encrypted, nonce, passwordKey);
+              if (decrypted) {
+                localStorage.setItem('private_key', encodeBase64(decrypted));
+              }
             }
+
             onSuccess();
+            
             }
             else{
                 console.error('Identifiants incorrrectes');

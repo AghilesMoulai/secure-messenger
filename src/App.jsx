@@ -94,6 +94,7 @@ function App() {
       });
       const keyData = await keyRes.json();
       const recipientPublicKey = decodeBase64(keyData.public_key.public_key);
+
       const senderPrivateKey = decodeBase64(localStorage.getItem('private_key'));
       const nonce = nacl.randomBytes(24);
       const messageBytes = new TextEncoder().encode(message);
@@ -182,7 +183,7 @@ function App() {
   }
 
   if (page === 'register'){
-    return <Register onSuccess={() => changePage('login')} onLogin={() => changePage('login')} />;
+    return <Register onSuccess={() => changePage('contacts')} onLogin={() => changePage('login')} />;
   }
 
   if (page === 'contacts'){

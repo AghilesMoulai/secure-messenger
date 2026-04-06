@@ -1,9 +1,36 @@
 import {useState, useRef, useEffect} from 'react';
+import nacl from 'tweetnacl'
+import { encodeBase64, decodeBase64 } from 'tweetnacl-util';
+
 
 function Register({onSuccess, onLogin}){
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [username, setUsername] = useState('');
+
+    const passwordToKey = async (password) => {
+        const encoder = new TextEncoder();
+        const keyMaterial = await crypto.subtle.importKey(
+            'raw',
+            encoder.encode(password),
+            'PBKDF2',
+            false,
+            ['deriveBits']
+        );
+
+        const bits = await crypto.subtle.deriveBits(
+            {
+                name: 'PBKDF2',
+                salt: encoder.encode('aghimessenger-salt'),
+                iterations: 100000,
+                hash: 'SHA-256'
+            },
+            keyMaterial,
+            256
+        );
+
+        return new Uint8Array(bits);
+    };
 
     const sendRegistration = async () => {
         if(email.trim() === '' || password.trim() === '' || username.trim() === ''){
@@ -19,6 +46,37 @@ function Register({onSuccess, onLogin}){
                 body: JSON.stringify({username:username, email:email, password:password})
             });
 
+            const data = await res.json();
+            
+            if(data.token){
+            
+                localStorage.setItem('token', data.token);
+                localStorage.setItem('username', data.username);
+
+                const keyPair = nacl.box.keyPair();
+                const publicKey = encodeBase64(keyPair.publicKey);
+                const privateKey = keyPair.secretKey;
+
+                const passwordKey = await passwordToKey(password);
+                const nonce = nacl.randomBytes(24);
+                const encryptedPrivateKey = nacl.secretbox(privateKey, nonce, passwordKey);
+                const encryptedPrivateKeyB64 = encodeBase64(nonce) + ':' + encodeBase64(encryptedPrivateKey);
+
+                localStorage.setItem('private_key', encodeBase64(privateKey));
+                
+                await fetch('http://localhost:3001/users/key', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${data.token}`
+                    },
+                    body: JSON.stringify({ public_key: publicKey,
+                        encrypted_private_key: encryptedPrivateKeyB64
+                     })
+                });
+            }else{
+                console.error("erreur serveur");
+            }
             onSuccess();
         }catch (error){
             console.error("Erreur lors de l'envoie du formulaire", error);

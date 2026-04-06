@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const Database = require('better-sqlite3');
@@ -24,11 +26,14 @@ db.exec(`
     username TEXT NOT NULL UNIQUE,
     email TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
-    public_key TEXT
+    public_key TEXT,
+    encrypted_private_key TEXT
     )`
   );
 
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173'
+}));
 app.use(express.json());
 
 const verifyToken = (req, res, next) => {
@@ -39,7 +44,7 @@ const verifyToken = (req, res, next) => {
     return res.status(401).json({ error: 'Token manquant'});
   }
 
-  jwt.verify(token, 'SECRET_KEY', (err, user) => {
+  jwt.verify(token, process.env.SECRET_KEY, (err, user) => {
     if(err) return res.status(401).json({error: 'Token Invalide'});
     req.user = user;
     next();
@@ -86,10 +91,18 @@ app.post('/register', async (req, res) => {
 
   const password_hash = await bcrypt.hash(password, 10);
 
-  db.prepare('INSERT INTO users (username, email, password_hash) VALUES (?,?,?)').run(username, email, password_hash);
+  try{
+    db.prepare('INSERT INTO users (username, email, password_hash) VALUES (?,?,?)').run(username, email, password_hash);
+  }catch(error){
+    console.error('Username ou adresse déja utilisée');
+    return res.status(400).json({status: "nom d'Utilisateur ou adresse mail déja utilisée"});
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email)
+  let token = jwt.sign({id: user.id, username: user.username}, process.env.SECRET_KEY, {expiresIn: '1h' });
 
   console.log(`new user added [${username}] with email: [${email}]`);
-  res.status(200).json({ status: 'Utilisateur enregistré'});
+  res.status(200).json({ status: 'Utilisateur enregistré', token:token, username: `${user.username}`});
 });
 
 app.post('/login', async (req, res) => {
@@ -109,7 +122,7 @@ app.post('/login', async (req, res) => {
 
   let token = null;
   if(match){
-    token = jwt.sign({id: user.id, username: user.username}, 'SECRET_KEY', { expiresIn: '1h' });
+    token = jwt.sign({id: user.id, username: user.username}, process.env.SECRET_KEY, { expiresIn: '1h' });
   }else{
     return res.status(400).json({ error: 'email ou mot de passe incorrecte' });
   }
@@ -125,10 +138,10 @@ app.get('/users', verifyToken, (req, res) => {
 })
 
 app.post('/users/key', verifyToken, (req, res) => {
-  const {public_key} = req.body;
+  const {public_key, encrypted_private_key} = req.body;
   const username = req.user.username;
 
-  db.prepare('UPDATE users SET public_key = ? WHERE username = ?').run(public_key, username);
+  db.prepare('UPDATE users SET public_key = ?, encrypted_private_key = ? WHERE username = ?').run(public_key, encrypted_private_key ,username);
   res.status(200).json({status: 'Clé publique enregistrée'});
 });
 
@@ -137,7 +150,13 @@ app.get('/users/key/:username', verifyToken, (req, res) => {
   const my_public_key = db.prepare('SELECT public_key FROM users WHERE username = ?').get(me);
 
   res.status(200).json({status: 'Clé publique utilisateur récupérée', public_key: my_public_key})
-})
+});
+
+app.get('/users/mykey', verifyToken, (req, res) => {
+  const username = req.user.username;
+  const user = db.prepare('SELECT encrypted_private_key FROM users WHERE username = ?').get(username);
+  res.status(200).json({ encrypted_private_key: user.encrypted_private_key });
+});
 
 app.listen(PORT, () => {
   console.log(`Serveur lancé sur http://localhost:${PORT}`);
